@@ -326,6 +326,8 @@ app.post('/api/sos', async (req, res) => {
       hops_traversed: routingResult.hop_trace.length - 1,
       hop_trace: routingResult.hop_trace,
       relay_inspection_log: routingResult.relay_inspection_log,
+      ble_header_bytes: routingResult.ble_header_bytes,
+      wifi_direct_attachment_bytes: routingResult.wifi_direct_attachment_bytes,
       ble_payload_bytes: routingResult.ble_payload_bytes,
       ble_ready: routingResult.ble_ready,
       mission_route: missionRoute,

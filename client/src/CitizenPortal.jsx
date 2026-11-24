@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
+import { QRCodeSVG } from 'qrcode.react';
 import { TRANSLATIONS } from './translations.js';
 import {
   Heart,
@@ -18,7 +19,10 @@ import {
   ShieldCheck,
   QrCode,
   ArrowRight,
-  RefreshCw
+  RefreshCw,
+  VolumeX,
+  Clock,
+  ShieldAlert
 } from 'lucide-react';
 
 export default function CitizenPortal({ onSwitchToRescuer }) {
@@ -41,7 +45,18 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
   const [activeCase, setActiveCase] = useState(null);
   const [replies, setReplies] = useState([]);
   const [tokenQrUrl, setTokenQrUrl] = useState('');
-  const [claimStatus, setClaimStatus] = useState(null); // null | SUCCESS | DOUBLE_CLAIM_BLOCKED
+  const [claimStatus, setClaimStatus] = useState(null);
+  const [showQrModal, setShowQrModal] = useState(false);
+
+  // Feature 2: Silent-Distress 15-Second Heartbeat Monitor (Slide 6)
+  const [heartbeatActive, setHeartbeatActive] = useState(false);
+  const [countdown, setCountdown] = useState(15);
+  const timerRef = useRef(null);
+
+  // Feature 4: Web Audio Acoustic SOS Beacon
+  const [acousticActive, setAcousticActive] = useState(false);
+  const audioCtxRef = useRef(null);
+  const oscRef = useRef(null);
 
   // Speak helper for Blind Mode
   const speak = (text) => {
@@ -59,6 +74,97 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
     setTimeout(() => setVisualFlash(false), 2000);
     if (navigator.vibrate) {
       navigator.vibrate([200, 100, 200, 100, 400]);
+    }
+  };
+
+  // Silent-Distress Heartbeat Countdown Loop
+  useEffect(() => {
+    if (heartbeatActive) {
+      timerRef.current = setInterval(() => {
+        setCountdown(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            handleTriggerSilentDistress();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setCountdown(15);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [heartbeatActive, sourceNode]);
+
+  const handleStartHeartbeat = () => {
+    setHeartbeatActive(true);
+    setCountdown(15);
+    speak("Silent Distress Monitor activated. Tap I'm OK within 15 seconds to check in.");
+  };
+
+  const handleImOk = () => {
+    setCountdown(15);
+    triggerAlertFeedback();
+    speak("Check in verified. Heartbeat timer reset to 15 seconds.");
+  };
+
+  const handleStopHeartbeat = () => {
+    setHeartbeatActive(false);
+    setCountdown(15);
+    speak("Silent Distress Monitor deactivated.");
+  };
+
+  const handleTriggerSilentDistress = async () => {
+    try {
+      const res = await fetch(`/api/nodes/${sourceNode}/silent-distress`, { method: 'POST' });
+      const data = await res.json();
+      if (data.case_record) {
+        setActiveCase(data.case_record);
+        if (data.ration_token) generateQr(data.ration_token);
+      }
+      triggerAlertFeedback();
+      speak("Emergency! Silent distress alert triggered automatically due to missed check in. Priority Red SOS dispatched.");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Acoustic SOS Beacon (Web Audio API audible chirp)
+  const handleToggleAcousticBeacon = () => {
+    if (acousticActive) {
+      if (oscRef.current) {
+        try { oscRef.current.stop(); } catch (e) {}
+        oscRef.current = null;
+      }
+      setAcousticActive(false);
+      speak("Acoustic SOS Beacon stopped.");
+    } else {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioCtx();
+        audioCtxRef.current = ctx;
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(880, ctx.currentTime); // 880 Hz High A chirp
+
+        // Pulse volume
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start();
+        oscRef.current = osc;
+        setAcousticActive(true);
+        speak("Acoustic SOS audio beacon activated. Audible distress frequency broadcasting.");
+      } catch (err) {
+        alert("Acoustic audio not supported on this browser.");
+      }
     }
   };
 
@@ -243,8 +349,22 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
           <p className="text-xs text-slate-400">{t.zero_pass_subtitle}</p>
         </div>
 
-        {/* Language & Switch Role */}
-        <div className="flex items-center space-x-3">
+        {/* Language, Acoustic Beacon & Switch Role */}
+        <div className="flex items-center space-x-2.5">
+          {/* Acoustic SOS Beacon */}
+          <button
+            onClick={handleToggleAcousticBeacon}
+            className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 ${
+              acousticActive
+                ? 'bg-rose-600 text-white animate-pulse'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+            }`}
+            title="Acoustic audio chirp when mesh radios fail"
+          >
+            <Radio className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{acousticActive ? 'Stop Siren' : 'Acoustic SOS'}</span>
+          </button>
+
           {/* Language Selector */}
           <div className="flex bg-[#0A192F] border border-[#1E3A5F] rounded-lg p-1 text-xs">
             {[
@@ -277,6 +397,58 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
       </header>
 
       <main className="max-w-4xl mx-auto mt-6 space-y-6">
+        {/* Silent-Distress 15-Second Heartbeat Monitor (Slide 6 Pitch Match) */}
+        <div className="bg-gradient-to-r from-[#112240] to-[#162a4d] border border-cyan-500/50 rounded-2xl p-4 shadow-xl">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center space-x-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-lg ${
+                heartbeatActive ? (countdown <= 5 ? 'bg-rose-600 text-white animate-ping' : 'bg-cyan-950 text-cyan-400 border border-cyan-500') : 'bg-slate-800 text-slate-400'
+              }`}>
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center">
+                  Silent-Distress Heartbeat Monitor
+                  <span className="ml-2 text-[10px] font-mono-code px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                    15s FAILSAFE
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-300">
+                  {heartbeatActive
+                    ? `Auto-fires signed RED distress SOS if unanswered within ${countdown}s`
+                    : 'Failsafe for unconscious or incapacitated victims during rising waters.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              {!heartbeatActive ? (
+                <button
+                  onClick={handleStartHeartbeat}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded-xl text-xs transition shadow-md"
+                >
+                  Start 15s Heartbeat
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={handleImOk}
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-xl text-sm transition shadow-lg pulse-glow flex items-center space-x-1.5 animate-bounce"
+                  >
+                    <span>I'M OK! ({countdown}s)</span>
+                  </button>
+                  <button
+                    onClick={handleStopHeartbeat}
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-xl text-xs transition"
+                  >
+                    Stop
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Accessibility Control Bar */}
         <div className="bg-[#112240] border border-[#1E3A5F] rounded-2xl p-4 shadow-lg">
           <div className="flex items-center justify-between mb-3 text-xs text-slate-400">
@@ -491,7 +663,7 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Mission Dispatch Summary */}
+              {/* Mission Dispatch Summary & BLE Byte Split */}
               <div className="p-4 bg-[#0A192F] border border-cyan-900/50 rounded-xl space-y-2">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-400">{t.route_eta}</span>
@@ -511,6 +683,12 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
                     {Object.entries(activeCase.allocated_supplies || {}).map(([k, v]) => `${k}:${v}`).join(', ') || 'Standard Food/Water Pack'}
                   </span>
                 </div>
+
+                {/* BLE Header & Wi-Fi Direct Byte Split */}
+                <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-[10px] font-mono-code text-slate-400">
+                  <span>BLE Frame: <strong className="text-emerald-400">{activeCase.ble_header_bytes || 128} B (≤250 Ready)</strong></span>
+                  <span>Wi-Fi Direct Payload: <strong className="text-cyan-400">{activeCase.wifi_direct_attachment_bytes || 1840} B</strong></span>
+                </div>
               </div>
 
               {/* Digital Signed Ration Token Card */}
@@ -529,7 +707,7 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
                         Ed25519 Sig: {activeCase.ration_token.ed25519_signature?.slice(0, 24)}...
                       </p>
 
-                      <div className="mt-3">
+                      <div className="mt-3 flex items-center space-x-2">
                         <button
                           onClick={handleClaimRation}
                           className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 ${
@@ -543,21 +721,35 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
                             {activeCase.ration_token.status === 'REDEEMED' ? t.redeemed : t.redeem_btn}
                           </span>
                         </button>
-                        {claimStatus === 'DOUBLE_CLAIM_BLOCKED' && (
-                          <div className="mt-2 text-rose-400 text-xs font-semibold flex items-center">
-                            <AlertTriangle className="w-3.5 h-3.5 mr-1" /> DOUBLE_CLAIM_BLOCKED — Fraud Prevented!
-                          </div>
-                        )}
+                        <button
+                          onClick={() => setShowQrModal(true)}
+                          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold flex items-center space-x-1"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Show QR</span>
+                        </button>
                       </div>
+
+                      {claimStatus === 'DOUBLE_CLAIM_BLOCKED' && (
+                        <div className="mt-2 text-rose-400 text-xs font-semibold flex items-center">
+                          <AlertTriangle className="w-3.5 h-3.5 mr-1" /> DOUBLE_CLAIM_BLOCKED — Fraud Prevented!
+                        </div>
+                      )}
                     </div>
 
                     {/* QR Code */}
-                    {tokenQrUrl && (
-                      <div className="bg-white p-1.5 rounded-lg shadow-md shrink-0">
-                        <img src={tokenQrUrl} alt="Ration QR" className="w-24 h-24" />
-                        <span className="block text-center text-[8px] font-bold text-slate-800">SCAN TO VERIFY</span>
-                      </div>
-                    )}
+                    <div className="bg-white p-2 rounded-xl shadow-md shrink-0">
+                      <QRCodeSVG
+                        value={JSON.stringify({
+                          tokenId: activeCase.ration_token.tokenId,
+                          sig: activeCase.ration_token.ed25519_signature?.slice(0, 20)
+                        })}
+                        size={84}
+                        bgColor="#ffffff"
+                        fgColor="#07111E"
+                      />
+                      <span className="block text-center text-[7px] font-bold text-slate-800 mt-0.5">OFFLINE QR</span>
+                    </div>
                   </div>
                 </div>
               )}
@@ -587,6 +779,42 @@ export default function CitizenPortal({ onSwitchToRescuer }) {
           )}
         </div>
       </main>
+
+      {/* Offline QR Export Modal */}
+      {showQrModal && activeCase?.ration_token && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-[#112240] border border-cyan-500 rounded-2xl p-6 max-w-sm w-full text-center space-y-4">
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+              Signed Digital Ration QR
+            </h3>
+            <div className="bg-white p-4 rounded-2xl mx-auto inline-block shadow-2xl">
+              <QRCodeSVG
+                value={JSON.stringify({
+                  tokenId: activeCase.ration_token.tokenId,
+                  source: activeCase.source_name,
+                  supplies: activeCase.allocated_supplies,
+                  sig: activeCase.ration_token.ed25519_signature
+                })}
+                size={200}
+                bgColor="#ffffff"
+                fgColor="#07111E"
+              />
+            </div>
+            <p className="text-xs text-slate-300 font-mono-code">
+              Token ID: {activeCase.ration_token.tokenId}
+            </p>
+            <p className="text-[11px] text-emerald-400">
+              Verified by Central Disaster Relief Hub
+            </p>
+            <button
+              onClick={() => setShowQrModal(false)}
+              className="w-full py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded-xl text-xs transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

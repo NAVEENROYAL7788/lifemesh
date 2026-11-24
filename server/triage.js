@@ -55,6 +55,15 @@ class TriageEngine {
         });
         this.modelLoaded = true;
         console.log(`[TriageEngine] LLM model loaded successfully into ${env.cacheDir}`);
+
+        // Pre-warm the model on startup so demo calls execute fast
+        try {
+          console.log('[TriageEngine] Pre-warming LLM on startup...');
+          await this.pipeline('LifeMesh system ready', { max_new_tokens: 5 });
+          console.log('[TriageEngine] LLM pre-warmed and ready for instant inference.');
+        } catch (pwErr) {
+          console.warn('[TriageEngine] Pre-warm notice:', pwErr.message);
+        }
       } catch (err) {
         console.warn(`[TriageEngine] Local LLM init notice (fallback ready): ${err.message}`);
         this.modelLoaded = false;
@@ -125,7 +134,7 @@ class TriageEngine {
   }
 
   // Step A: Local LLM Extraction with Timeout Guardrail
-  async extractWithLLM(message, medicalMode, timeoutMs = 15000) {
+  async extractWithLLM(message, medicalMode, timeoutMs = 25000) {
     const startTime = Date.now();
     let fallback_used = false;
     let needs_human_review = false;
@@ -156,7 +165,7 @@ class TriageEngine {
       ];
 
       const output = await this.pipeline(messages, {
-        max_new_tokens: 180,
+        max_new_tokens: 96,
         temperature: 0.1,
         do_sample: false
       });
