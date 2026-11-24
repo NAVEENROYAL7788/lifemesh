@@ -1,0 +1,16 @@
+{
+  "name": "lifemesh-server",
+  "version": "1.0.0",
+  "description": "LifeMesh Core Backend & Offline AI Engine",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node smokeTest.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.3.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
