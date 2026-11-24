@@ -5,63 +5,68 @@
 
 ---
 
-## 🛡️ Feature Transparency & Compliance Statement
+## 📖 Project Overview
 
-In compliance with our hackathon audit principles, working vs. simulated layers are 100% transparent:
+During severe floods (e.g., Chennai cyclone inundation), cell towers fail, power grids trip, and cloud APIs become unreachable. Stranded victims in relief shelters lose the ability to request food, drinking water, and critical medicines. 
 
-- **LIVE REAL IMPLEMENTATIONS (GENUINELY EXECUTING):**
-  - **Offline Local On-Device LLM:** Quantized `onnx-community/Qwen2.5-0.5B-Instruct` (`q4`) running purely on-device via `@huggingface/transformers` with zero cloud calls and measured latency (`latency_ms`).
-  - **Deterministic START Triage Engine:** "The LLM explains, the rules decide" guardrail. Clinical priorities, tags (`RED`, `YELLOW`, `GREEN`, `BLACK`), and finite stock allocations are computed by strict clinical rules with multilingual fallback (Tamil, Tanglish, English).
-  - **Real Cryptography:** Ed25519 asymmetric signing and verification on every relay hop and destination (`node:crypto.sign` and `node:crypto.verify`).
-  - **Zero-Knowledge Medical Privacy:** AES-256-GCM encryption of sensitive patient metadata. Intermediate relay forwarders see only hex ciphertext, IV, and auth tag; only `relief-hub` decrypts it.
-  - **Cryptographic Ration Tokens (SDG 2):** Every verified SOS creates an Ed25519-signed digital ration token with real double-claim fraud rejection (`DOUBLE_CLAIM_BLOCKED`).
-  - **Live Offline LAN Two-Way Relay:** Real-time Server-Sent Events (`/api/stream`) synchronizing laptop and mobile phones across local Wi-Fi / hotspot.
-  - **Multi-Modal Accessibility:** Elderly high-contrast scaling, Blind voice-first mode (`window.speechSynthesis`), Deaf flashing visual alerts, and Mute 1-tap pictogram grid.
-- **SIMULATED LAYERS:**
-  - **Simulated BLE / Wi-Fi Direct Peer Radios:** A 7-node adjacency graph (`SYNTHETIC_NODES`) simulating Chennai flood-zone wards with real BFS shortest-path routing, hop inspection logs, and compressed payload byte checks (`ble_payload_bytes`).
+**LifeMesh** is an offline-first crisis relief and emergency micro-logistics relay operating completely without internet. It combines **local on-device quantized LLM inference** (`onnx-community/Qwen2.5-0.5B-Instruct` q4), **deterministic START medical triage overrides**, **Ed25519 signing and verification on every relay hop**, **AES-256-GCM zero-knowledge patient privacy**, and **fraud-proof digital ration tokens (UN SDG 2)**.
 
 ---
 
-## 📱 Two-Role Architecture & Demo Flow
+## ⚡ Quick Start
 
-### 1. Citizen / Victim Portal (Zero Password — 1-Tap Access)
-- **Instant Access:** No login, no password, no barriers.
-- **Multilingual Support:** English, தமிழ் (Tamil), and Tanglish.
-- **1-Tap Emergency Pictograms:**
-  - 🫀 **Cardiac Emergency** (`Nenju vali / நெஞ்சு வலி`)
-  - 👶 **Pregnancy / Labour** (`Prasavam / பிரசவம்`)
-  - 💉 **Diabetic / Insulin** (`Sugar low / இன்சுலின்`)
-  - 🌊 **Flood Trapped** (`Thanniyula maatikittom / வெள்ளம்`)
-  - 🍞 **Food & Water Depleted** (`Saapaadu theva`)
-- **Live Rescue Tracker & Incoming Messages:** Displays real-time updates broadcasted by rescuers, dynamic ETA in minutes, and QR ration token card.
+### Prerequisites
+- Node.js v18+ (tested on v20+)
+- No paid API keys required. 100% free and open-source.
 
-### 2. Rescuer Command Center (Password Protected)
-- **Authentication:** Demo access via password `RESCUE2026`.
-- **Verified Casualty Board:** Prioritized by START triage scores.
-- **Interactive Offline Route Map (SVG):** Visualizes the Central Relief Hub, 6 flood wards, and bridges. Dynamically recalculates route ETAs and reroutes to amphibious rescue boats when bridge transit nodes (`Ward-4 Adyar Bridge` or `Ward-5 Saidapet Metro`) are flooded/toggled offline.
-- **Two-Way Messaging:** Push real-time instructions directly to stranded citizens' phones over SSE.
-- **Ration Tokens (SDG 2):** Audit and verify digital tokens, with live double-spend protection.
-- **Network Pairing QR Code:** Automatically displays local LAN IP (e.g., `http://172.16.4.99:5173/?mode=citizen`) for instant phone scanning during live stage demos.
-
----
-
-## 🚀 Quickstart & Offline Execution
-
-### 1. Start Server & Client
+### 1. Launch Server (Port 3001)
 ```bash
-# Terminal 1: Backend & Local AI Engine (Port 3001)
 cd server
+npm install
 npm start
+```
 
-# Terminal 2: Vite Client (Port 5173, Host 0.0.0.0)
+### 2. Launch Client (Port 5173, Host 0.0.0.0)
+```bash
 cd client
+npm install
 npm run dev
 ```
 
-### 2. Run Test Suites
-```bash
-# Automated verification test suites:
-cd server
-node juryTest.js   # Verifies LAN IP, Auth, SOS, Two-Way SSE, Ration Tokens, Bridge Rerouting
-node smokeTest.js  # Verifies Local LLM, Cryptography, Tamper Attacks, CRDT Mule Sync
-```
+### 3. Open Web Portals
+- **Laptop Command Center:** Open `http://localhost:5173`
+- **Mobile Phone (Offline LAN):** Connect phone to the laptop's Wi-Fi hotspot, scan the on-screen pairing QR code, or navigate to `http://<laptop-lan-ip>:5173/?mode=citizen`
+- **Rescuer Password:** `RESCUE2026` (Callsign: `RESCUER-ALPHA`)
+
+---
+
+## 🛡️ Feature Transparency Table
+
+In strict compliance with hackathon audit guidelines, working vs. simulated layers are 100% transparent:
+
+| Feature / Layer | Implementation Status | Technical Mechanism |
+|---|---|---|
+| **Local On-Device LLM** | **LIVE REAL** | Quantized `onnx-community/Qwen2.5-0.5B-Instruct` (q4) executed locally on CPU via `@huggingface/transformers` in `server/model_cache/`. Measured latency (`latency_ms`) returned on every call with zero external network access. |
+| **START Protocol Triage Override** | **LIVE REAL** | "The LLM explains, the rules decide" guardrail. Clinical priorities (`RED`, `YELLOW`, `GREEN`, `BLACK`) and scarce hub supplies are allocated strictly by deterministic START rules with multilingual typo & Tamil/Tanglish lexicon fallback. |
+| **Asymmetric Cryptography** | **LIVE REAL** | Node.js built-in `crypto.sign` and `crypto.verify` (Ed25519) on every relay hop and at the relief hub. Rogue payload mutations trigger `ED25519_SIGNATURE_MISMATCH` and node quarantine. |
+| **Zero-Knowledge Medical Privacy** | **LIVE REAL** | AES-256-GCM encryption of sensitive patient metadata. Intermediate relay nodes inspect only hex ciphertext, IV, and auth tag; only `Central Disaster Relief Hub` possesses the symmetric key to decrypt plaintext. |
+| **Digital Ration Tokens (SDG 2)** | **LIVE REAL** | Ed25519-signed ration tokens issued upon SOS verification. Validated via `POST /api/rations/:id/redeem` with active double-spend prevention (`DOUBLE_CLAIM_BLOCKED`). |
+| **Offline Sign-Language Camera SOS** | **LIVE REAL** | On-device MediaPipe vision (`@mediapipe/tasks-vision`) with 100% local WASM (`/mediapipe/wasm`) and local task asset (`/mediapipe/hand_landmarker.task`). Detects 4 gestures with a 1.5-second hold progress bar. |
+| **Live Phone ↔ Laptop Sync** | **LIVE REAL** | Real-time Server-Sent Events (`GET /api/stream`) broadcasting state across local Wi-Fi / hotspot. Two-way rescuer replies push immediately to phone screens. |
+| **Silent-Distress Failsafe** | **LIVE REAL** | 15-second heartbeat countdown timer. Unanswered timer triggers an automated signed RED distress alert for incapacitated victims. |
+| **Accessible White-Based UI** | **LIVE REAL** | WCAG AAA high-contrast design (`#F8FAFC` canvas, `#FFFFFF` cards, large text, min 52px touch targets, Elderly Mode, Blind voice synthesis, Deaf visual alerts, Mute pictograms). |
+| **Acoustic SOS Beacon** | **LIVE REAL** | Native browser Web Audio API (`AudioContext` + 880 Hz sawtooth `OscillatorNode`) as an audible acoustic distress chirp when radio links fail. |
+| **Physical Radio Mesh Topology** | **SIMULATED** | 7-node Chennai flood ward graph (`SYNTHETIC_NODES`) simulating BLE 5.2 / Wi-Fi Direct peer links with real BFS shortest-path routing, hop inspection logs, and $\le 250$-byte BLE discovery header framing. |
+| **Planned Production Roadmap** | **PLANNED** | Android Nearby Connections BLE/Wi-Fi Direct radio adapter plugin, camera-based contactless pulse/respiration vitals, state disaster management (NDRF) API integration. |
+
+---
+
+## 📋 Mandatory Buildathon Disclosures
+
+| Category | Disclosure Details |
+|---|---|
+| **Open Source Libraries** | Node.js built-in `crypto`, Express, CORS, React 18, Vite 6, Tailwind CSS, `@huggingface/transformers` (Apache 2.0), `@mediapipe/tasks-vision` (Apache 2.0), `qrcode.react`, `lucide-react`. |
+| **Pretrained Models** | `onnx-community/Qwen2.5-0.5B-Instruct` (quantized q4 ONNX), MediaPipe `hand_landmarker.task` (Google MediaPipe). |
+| **Paid APIs Used** | **ZERO.** Zero paid APIs, zero subscriptions, zero cloud inference costs at runtime. |
+| **Datasets Used** | **100% Synthetic Placeholder Data.** Synthetic Chennai flood wards (Velachery, Pallikaranai, Madipakkam, Adyar, Saidapet, Thoraipakkam) and synthetic patient records. Zero real personal identifying information (PII). |
+| **AI Assistants Used** | Antigravity IDE, Google Gemini, and Anthropic Claude were used during development and planning to assist with codebase architecture and documentation drafting. |

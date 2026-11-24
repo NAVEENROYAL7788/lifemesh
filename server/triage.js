@@ -13,14 +13,29 @@ export const DEFAULT_INVENTORY = {
 
 // Pure deterministic Tamil / Tanglish / English crisis keyword dictionary
 const CRISIS_LEXICON = {
-  cardiac: ['nenju vali', 'chest pain', 'heart attack', 'marapu', 'breathless', 'cardiac', 'pulse weak'],
-  pregnancy: ['prasavam', 'pregnant', 'delivery', 'labour pain', 'valikudhu', 'thaai', 'full term', 'water broke'],
-  diabetic: ['sugar', 'insulin', 'low sugar', 'diabetic', 'mayakkam', 'seeni'],
-  trapped: ['thanni', 'flood', 'roof', 'rooftop', 'trapped', 'water level high', 'marathula', 'submerged', 'water rising', 'surrounded by water'],
+  cardiac: ['nenju vali', 'nenju', 'chest pain', 'heart attack', 'marapu', 'breathless', 'cardiac', 'pulse weak', 'நெஞ்சு வலி', 'மாரடைப்பு'],
+  pregnancy: ['prasavam', 'prasavam valikkuthu', 'valikudhu', 'pregnant', 'delivery', 'labour pain', 'thaai', 'full term', 'water broke', 'பிரசவம்'],
+  diabetic: ['sugar', 'insulin', 'insulin illa', 'low sugar', 'diabetic', 'mayakkam', 'seeni', 'சர்க்கரை நோய்', 'இன்சுலின்'],
+  trapped: ['thanni', 'wtr', 'water rising', 'veetukulla vanthuruchu', 'veedu full ah thanni', 'flood', 'roof', 'rooftop', 'trapped', 'water level high', 'marathula', 'submerged', 'surrounded by water', 'வெள்ளம்'],
   silent_distress: ['missed heartbeat', 'silent distress', 'panic switch', 'no response'],
-  injuries: ['bleeding', 'fracture', 'broken', 'ratham', 'wound', 'head injury'],
-  vulnerability: ['elderly', 'paati', 'thatha', 'baby', 'child', 'kulandhai', 'disabled', 'wheelchair', 'dialysis', 'bedridden']
+  injuries: ['bleeding', 'fracture', 'broken', 'ratham', 'wound', 'head injury', 'இரத்தம்'],
+  vulnerability: ['elderly', 'paati', 'thatha', 'baby', 'child', 'kids', 'kulandhai', 'disabled', 'wheelchair', 'dialysis', 'bedridden']
 };
+
+// Safe / Non-Emergency terms to avoid false-positive supply depletion
+const SAFE_NON_EMERGENCY_TERMS = [
+  'we are safe',
+  'safe at the',
+  'just testing',
+  'test message',
+  'testing the mesh',
+  'power is back',
+  'no medical help needed',
+  'all good',
+  'nalla irukkom',
+  'no help needed',
+  'safe here'
+];
 
 class TriageEngine {
   constructor() {
@@ -76,13 +91,28 @@ class TriageEngine {
   // Deterministic Keyword Extractor (covers English + Tamil/Tanglish)
   extractKeywordsDeterministic(text = '', medicalMode = 'general') {
     const lower = (text + ' ' + medicalMode).toLowerCase();
+
+    // Check for safe / non-emergency false-positive control input
+    const isSafeMessage = SAFE_NON_EMERGENCY_TERMS.some(term => lower.includes(term));
+    if (isSafeMessage) {
+      return {
+        detected_symptoms: ['status:safe_control'],
+        people_affected: 1,
+        vulnerability_flags: [],
+        requested_supplies: [],
+        plain_summary: '[Control Check] Non-emergency status update: safe condition reported.',
+        is_safe_control: true,
+        confidence: 0.95
+      };
+    }
+
     const detected_symptoms = [];
     const vulnerability_flags = [];
     const requested_supplies = [];
     let estimatedPeople = 1;
 
     // Detect people count
-    const peopleMatch = lower.match(/(\d+)\s*(people|persons|per|members|aalu|family)/i);
+    const peopleMatch = lower.match(/(\d+)\s*(people|persons|per|members|aalu|family|kids|children)/i);
     if (peopleMatch) {
       estimatedPeople = parseInt(peopleMatch[1], 10);
     } else if (lower.includes('family') || lower.includes('kudumbam')) {
@@ -106,17 +136,17 @@ class TriageEngine {
       detected_symptoms.push(`mode:${medicalMode}`);
     }
 
-    // Supply mapping
-    if (lower.includes('water') || lower.includes('thanni') || lower.includes('thirsty')) {
+    // Supply mapping with typo resilience (e.g. wtr, food, insulin)
+    if (lower.includes('water') || lower.includes('thanni') || lower.includes('wtr') || lower.includes('thirsty')) {
       requested_supplies.push('water_packs');
     }
-    if (lower.includes('food') || lower.includes('pasikudhu') || lower.includes('ration') || lower.includes('eating')) {
+    if (lower.includes('food') || lower.includes('pasikudhu') || lower.includes('ration') || lower.includes('eating') || lower.includes('no food')) {
       requested_supplies.push('food_rations');
     }
     if (lower.includes('insulin') || lower.includes('sugar') || medicalMode === 'diabetic') {
       requested_supplies.push('insulin_packs');
     }
-    if (lower.includes('boat') || lower.includes('boat venum') || lower.includes('evacuate') || lower.includes('trapped')) {
+    if (lower.includes('boat') || lower.includes('boat venum') || lower.includes('evacuate') || lower.includes('trapped') || lower.includes('rising fast')) {
       requested_supplies.push('rescue_boats');
     }
     if (detected_symptoms.length > 0 || medicalMode !== 'general') {
@@ -129,7 +159,7 @@ class TriageEngine {
       vulnerability_flags: Array.from(new Set(vulnerability_flags)),
       requested_supplies: Array.from(new Set(requested_supplies)),
       plain_summary: `[Deterministic Fallback] Urgent report: ${detected_symptoms.join(', ') || 'Crisis assistance required'}.`,
-      confidence: 0.82
+      confidence: 0.85
     };
   }
 
@@ -218,6 +248,18 @@ class TriageEngine {
     let tag = 'GREEN';
     const reasons = [];
 
+    // Check for Safe / Non-emergency control input: Allocate ZERO scarce supplies
+    if (extraction.is_safe_control) {
+      return {
+        triage_tag: 'GREEN',
+        triage_score: 15,
+        clinical_rationale: 'NON_EMERGENCY_CONTROL: Area safe, mesh functional. No scarce medical or rescue resources allocated.',
+        allocated_supplies: {},
+        remaining_hub_inventory: { ...this.inventory },
+        transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
+      };
+    }
+
     const symptoms = (extraction.detected_symptoms || []).join(' ').toLowerCase();
     const flags = (extraction.vulnerability_flags || []).join(' ').toLowerCase();
     const mode = (medicalMode || 'general').toLowerCase();
@@ -232,7 +274,7 @@ class TriageEngine {
       symptoms.includes('unconscious') ||
       symptoms.includes('ratham') ||
       symptoms.includes('bleeding') ||
-      (mode === 'pregnancy' && (symptoms.includes('labour') || symptoms.includes('valikudhu') || symptoms.includes('water broke')))
+      (mode === 'pregnancy' && (symptoms.includes('labour') || symptoms.includes('valikudhu') || symptoms.includes('valikkuthu') || symptoms.includes('water broke')))
     ) {
       score = 92;
       tag = 'RED';
@@ -245,7 +287,9 @@ class TriageEngine {
       flags.includes('baby') ||
       flags.includes('dialysis') ||
       symptoms.includes('fracture') ||
-      symptoms.includes('sugar')
+      symptoms.includes('sugar') ||
+      symptoms.includes('insulin') ||
+      symptoms.includes('thanni')
     ) {
       score = 68;
       tag = 'YELLOW';
