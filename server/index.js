@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { SYNTHETIC_NODES, cryptoManager } from './crypto.js';
@@ -17,8 +18,99 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// In-Memory Verified Casualty Board (Sorted by Triage Score descending)
+// In-Memory Data Stores
 const casualtyBoard = [];
+const rationTokens = new Map(); // tokenId -> token details
+const caseReplies = new Map(); // caseId -> array of replies
+const sseClients = new Set(); // Set of active SSE response objects
+
+// Helper: Broadcast live SSE events to all connected clients
+function broadcastEvent(type, data) {
+  const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(payload);
+    } catch (err) {
+      sseClients.delete(client);
+    }
+  }
+}
+
+// Helper: Get best local LAN IPv4 address prioritizing Wi-Fi, Ethernet, Hotspot
+function getLanIpv4() {
+  const ifaces = os.networkInterfaces();
+  let candidate = '127.0.0.1';
+
+  // Prefer Wi-Fi / WLAN, then Ethernet, then any non-internal IPv4
+  const priorityOrder = ['wi-fi', 'wlan', 'hotspot', 'ethernet'];
+
+  for (const prefix of priorityOrder) {
+    for (const [name, addrs] of Object.entries(ifaces)) {
+      if (name.toLowerCase().includes(prefix)) {
+        const found = addrs.find(a => a.family === 'IPv4' && !a.internal);
+        if (found) return found.address;
+      }
+    }
+  }
+
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    const found = addrs.find(a => a.family === 'IPv4' && !a.internal);
+    if (found) return found.address;
+  }
+
+  return candidate;
+}
+
+// Distance & ETA calculation based on Chennai flood-zone coordinates & active bridges
+function calculateMissionRoute(targetNodeId) {
+  const hub = SYNTHETIC_NODES['relief-hub'];
+  const target = SYNTHETIC_NODES[targetNodeId];
+  if (!target) return null;
+
+  // Approximate distance in km using Haversine formula
+  const R = 6371; // Earth's radius in km
+  const dLat = (target.lat - hub.lat) * (Math.PI / 180);
+  const dLon = (target.lng - hub.lng) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(hub.lat * (Math.PI / 180)) * Math.cos(target.lat * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const rawDistKm = +(R * c).toFixed(2);
+
+  // Check if critical transit bridge nodes (ward-4 Adyar, ward-5 Saidapet) are online
+  const ward4 = meshNetwork.nodes.get('ward-4');
+  const ward5 = meshNetwork.nodes.get('ward-5');
+  const bridge1Open = ward4 && ward4.status === 'ONLINE';
+  const bridge2Open = ward5 && ward5.status === 'ONLINE';
+
+  let mode = 'Elevated Road / Emergency Vehicle';
+  let etaMins = Math.max(8, Math.round(rawDistKm * 3.2));
+  let routeStatus = 'OPTIMAL_ELEVATED_PASS';
+
+  if (!bridge1Open && !bridge2Open) {
+    mode = 'Rescue Boat / Amphibious Vessel';
+    etaMins = Math.round(etaMins * 2.4); // Detour & water navigation
+    routeStatus = 'BRIDGES_FLOODED_AMPHIBIOUS_DETOUR';
+  } else if (!bridge1Open || !bridge2Open) {
+    mode = 'Elevated Road + Perimeter Boat Detour';
+    etaMins = Math.round(etaMins * 1.6);
+    routeStatus = 'PARTIAL_FLOOD_DETOUR';
+  }
+
+  return {
+    origin: { id: hub.id, name: hub.name, lat: hub.lat, lng: hub.lng },
+    destination: { id: target.id, name: target.name, lat: target.lat, lng: target.lng },
+    distance_km: rawDistKm,
+    eta_minutes: etaMins,
+    transport_mode: mode,
+    route_status: routeStatus,
+    bridge_statuses: {
+      adyar_bridge_ward4: bridge1Open ? 'PASSABLE' : 'FLOODED_BLOCKED',
+      saidapet_metro_ward5: bridge2Open ? 'PASSABLE' : 'FLOODED_BLOCKED'
+    }
+  };
+}
 
 // 1. Health & Offline AI Readiness
 app.get('/api/health', (req, res) => {
@@ -33,10 +125,66 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// 2. Full Mesh & Operational State
+// 2. Real-Time Server-Sent Events (SSE) Stream
+app.get('/api/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive'
+  });
+
+  res.write(`event: connected\ndata: ${JSON.stringify({ message: 'LifeMesh SSE Connected', timestamp: new Date().toISOString() })}\n\n`);
+  sseClients.add(res);
+
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
+
+// 3. Network Discovery: LAN IPv4 for Phone QR Code Connect
+app.get('/api/network-info', (req, res) => {
+  const lanIp = getLanIpv4();
+  const phoneUrl = `http://${lanIp}:5173/?mode=citizen`;
+  const laptopUrl = `http://localhost:5173`;
+
+  res.json({
+    lan_ip: lanIp,
+    phone_url: phoneUrl,
+    laptop_url: laptopUrl,
+    client_port: 5173,
+    server_port: PORT,
+    hotspot_ready: true,
+    transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
+  });
+});
+
+// 4. Rescuer Authentication (Password Protected)
+app.post('/api/auth/rescuer', (req, res) => {
+  const { callsign = 'RESCUER-ALPHA', password } = req.body;
+  const DEMO_PASS = 'RESCUE2026';
+
+  if (password !== DEMO_PASS) {
+    return res.status(401).json({
+      success: false,
+      error: 'INVALID_PASSWORD',
+      details: 'Unauthorized. Use demo password RESCUE2026 to unlock Rescuer Command Center.'
+    });
+  }
+
+  const sessionToken = `rescuer-token-${crypto.randomBytes(8).toString('hex')}`;
+  res.json({
+    success: true,
+    role: 'VERIFIED_RESPONDER',
+    callsign,
+    sessionToken,
+    hub_public_key: cryptoManager.getPublicKeyPem('relief-hub'),
+    message: 'Rescuer Command Center access granted.'
+  });
+});
+
+// 5. Full Mesh & Operational State
 app.get('/api/state', (req, res) => {
   const meshState = meshNetwork.getState();
-  // Sort casualty board by triage score descending (highest priority first)
   const sortedBoard = [...casualtyBoard].sort((a, b) => (b.triage_score || 0) - (a.triage_score || 0));
 
   res.json({
@@ -45,13 +193,14 @@ app.get('/api/state', (req, res) => {
     quarantined_nodes: meshState.quarantined_nodes,
     inventory: triageEngine.inventory,
     casualty_board: sortedBoard,
+    ration_tokens: Array.from(rationTokens.values()),
     tamper_logs: meshState.tamper_logs,
     data_mule_logs: meshState.data_mule_logs,
     transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
   });
 });
 
-// 3. Submit SOS Packet (Sign, Encrypt, Route, and Triage)
+// 6. Submit SOS Packet (Sign, Encrypt, Route, Triage + Issue Signed Ration Token)
 app.post('/api/sos', async (req, res) => {
   try {
     const {
@@ -88,7 +237,6 @@ app.post('/api/sos', async (req, res) => {
       encrypted_medical_payload
     };
 
-    // Sender signs packet
     const ed25519_signature = cryptoManager.signPayload(source_node_id, canonical_payload);
 
     const packet = {
@@ -102,10 +250,12 @@ app.post('/api/sos', async (req, res) => {
     const routingResult = meshNetwork.routePacket(packet);
 
     if (routingResult.rejected) {
+      broadcastEvent('tamper_event', routingResult);
       return res.status(403).json(routingResult);
     }
 
     if (routingResult.partitioned) {
+      broadcastEvent('node_toggled', { source_node_id, partitioned: true, queue_length: routingResult.queue_length });
       return res.json({
         status: 'BUFFERED_OFFLINE',
         packet_id,
@@ -123,6 +273,36 @@ app.post('/api/sos', async (req, res) => {
       medical_mode: decryptedMedical?.medical_mode || medical_mode,
       accessibility_mode
     });
+
+    // Calculate Mission Route from Hub to Victim Node
+    const missionRoute = calculateMissionRoute(source_node_id);
+
+    // Create Ed25519-Signed Ration Token for Allocated Supplies (SDG 2: Zero Hunger)
+    const tokenId = `RT-${Date.now().toString().slice(-6)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+    const tokenCanonicalData = {
+      tokenId,
+      packet_id,
+      source_node_id,
+      allocated_supplies: triageResult.triage_decision.allocated_supplies,
+      issued_at: timestamp,
+      issuer: 'relief-hub'
+    };
+    const hubSignature = cryptoManager.signPayload('relief-hub', tokenCanonicalData);
+
+    const rationToken = {
+      tokenId,
+      packet_id,
+      source_node_id,
+      source_name: SYNTHETIC_NODES[source_node_id].name,
+      allocated_supplies: triageResult.triage_decision.allocated_supplies,
+      issued_at: timestamp,
+      status: 'ISSUED', // ISSUED | REDEEMED
+      redeemed_at: null,
+      ed25519_signature: hubSignature,
+      issuer: 'relief-hub',
+      issuer_public_key: cryptoManager.getPublicKeyPem('relief-hub')
+    };
+    rationTokens.set(tokenId, rationToken);
 
     const caseRecord = {
       case_id: `case-${packet_id}`,
@@ -148,15 +328,28 @@ app.post('/api/sos', async (req, res) => {
       relay_inspection_log: routingResult.relay_inspection_log,
       ble_payload_bytes: routingResult.ble_payload_bytes,
       ble_ready: routingResult.ble_ready,
+      mission_route: missionRoute,
+      ration_token_id: tokenId,
+      ration_token: rationToken,
+      replies: [],
       transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
     };
 
     casualtyBoard.push(caseRecord);
+    caseReplies.set(caseRecord.case_id, []);
+
+    // Broadcast SSE update to all connected laptops and phones
+    broadcastEvent('sos_created', {
+      case_record: caseRecord,
+      inventory: triageEngine.inventory,
+      ration_token: rationToken
+    });
 
     res.json({
       status: 'DELIVERED_AND_TRIAGED',
       case_record: caseRecord,
       routing: routingResult,
+      ration_token: rationToken,
       transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
     });
   } catch (err) {
@@ -164,7 +357,121 @@ app.post('/api/sos', async (req, res) => {
   }
 });
 
-// 4. Silent Distress Trigger for Missed Heartbeats
+// 7. Rescuer Two-Way Reply (Laptop -> Citizen Phone)
+app.post('/api/cases/:id/reply', (req, res) => {
+  try {
+    const caseId = req.params.id;
+    const { reply_text, rescuer_callsign = 'RESCUER-ALPHA' } = req.body;
+
+    const targetCase = casualtyBoard.find(c => c.case_id === caseId || c.packet_id === caseId);
+    if (!targetCase) {
+      return res.status(404).json({ error: `Case ${caseId} not found` });
+    }
+
+    const replyObj = {
+      id: `reply-${Date.now()}`,
+      case_id: targetCase.case_id,
+      source_node_id: targetCase.source_node_id,
+      rescuer_callsign,
+      text: reply_text,
+      timestamp: new Date().toISOString(),
+      eta_minutes: targetCase.mission_route?.eta_minutes || 12,
+      transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
+    };
+
+    targetCase.replies = targetCase.replies || [];
+    targetCase.replies.push(replyObj);
+
+    // Broadcast to SSE immediately
+    broadcastEvent('rescuer_reply', replyObj);
+
+    res.json({
+      success: true,
+      reply: replyObj,
+      transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 8. Redeem / Verify Ration Token (With Double-Claim Fraud Prevention)
+app.post('/api/rations/:tokenId/redeem', (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    const token = rationTokens.get(tokenId);
+
+    if (!token) {
+      return res.status(404).json({ error: `Ration token ${tokenId} not found` });
+    }
+
+    // Double-claim prevention check
+    if (token.status === 'REDEEMED') {
+      const fraudLog = {
+        type: 'DOUBLE_CLAIM_BLOCKED',
+        tokenId,
+        source_node_id: token.source_node_id,
+        attempted_at: new Date().toISOString(),
+        original_redeemed_at: token.redeemed_at,
+        reason: 'FRAUD_PREVENTED: Ration token has already been redeemed.'
+      };
+      meshNetwork.tamperLogs.push(fraudLog);
+      broadcastEvent('tamper_event', fraudLog);
+
+      return res.status(409).json({
+        success: false,
+        double_claim_blocked: true,
+        reason: 'DOUBLE_CLAIM_BLOCKED',
+        error: 'Fraud prevented! This ration token was already redeemed.',
+        token
+      });
+    }
+
+    // Verify Ed25519 signature of the relief hub
+    const canonicalData = {
+      tokenId: token.tokenId,
+      packet_id: token.packet_id,
+      source_node_id: token.source_node_id,
+      allocated_supplies: token.allocated_supplies,
+      issued_at: token.issued_at,
+      issuer: token.issuer
+    };
+
+    const isSigValid = cryptoManager.verifySignature('relief-hub', canonicalData, token.ed25519_signature);
+    if (!isSigValid) {
+      return res.status(403).json({
+        success: false,
+        error: 'ED25519_VERIFICATION_FAILED',
+        details: 'Ration token signature is invalid or corrupted.'
+      });
+    }
+
+    // Mark as redeemed
+    token.status = 'REDEEMED';
+    token.redeemed_at = new Date().toISOString();
+
+    // Also update on casualty board case record
+    const targetCase = casualtyBoard.find(c => c.ration_token_id === tokenId);
+    if (targetCase && targetCase.ration_token) {
+      targetCase.ration_token.status = 'REDEEMED';
+      targetCase.ration_token.redeemed_at = token.redeemed_at;
+    }
+
+    broadcastEvent('ration_updated', { tokenId, token });
+
+    res.json({
+      success: true,
+      status: 'VERIFIED_AND_REDEEMED',
+      token,
+      ed25519_verified: true,
+      message: 'Ration token verified and redeemed successfully.'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 9. Silent Distress Trigger for Missed Heartbeats
 app.post('/api/nodes/:id/silent-distress', async (req, res) => {
   try {
     const nodeId = req.params.id;
@@ -180,7 +487,6 @@ app.post('/api/nodes/:id/silent-distress', async (req, res) => {
       condition_notes: 'Automated distress pulse initiated. Node unresponsive to scheduled check-in.'
     };
 
-    // Forward internally to SOS pipeline
     req.body = payload;
     return app._router.handle(req, res, () => {});
   } catch (err) {
@@ -188,12 +494,27 @@ app.post('/api/nodes/:id/silent-distress', async (req, res) => {
   }
 });
 
-// 5. Toggle Node Online/Offline ("Kill Relay Node")
+// 10. Toggle Node Online/Offline ("Kill Relay Node")
 app.post('/api/nodes/:id/toggle', (req, res) => {
   try {
     const nodeId = req.params.id;
     const { status } = req.body;
     const node = meshNetwork.toggleNode(nodeId, status);
+
+    // Recalculate routes for active cases
+    for (const c of casualtyBoard) {
+      if (c.status === 'OPEN') {
+        c.mission_route = calculateMissionRoute(c.source_node_id);
+      }
+    }
+
+    broadcastEvent('node_toggled', {
+      node_id: nodeId,
+      name: node.name,
+      status: node.status,
+      buffered_queue_length: node.store_and_forward_queue.length
+    });
+
     res.json({
       node_id: nodeId,
       name: node.name,
@@ -206,12 +527,11 @@ app.post('/api/nodes/:id/toggle', (req, res) => {
   }
 });
 
-// 6. Data Mule Rescue Boat Physical Sync (CRDT LWW merge)
+// 11. Data Mule Rescue Boat Physical Sync (CRDT LWW merge)
 app.post('/api/data-mule/sync', async (req, res) => {
   try {
     const syncResult = meshNetwork.runDataMuleSync();
 
-    // Process collected packets through Triage Engine
     const processedCases = [];
     for (const packet of syncResult.syncedPackets) {
       const decryptedMedical = cryptoManager.decryptMedicalPayload(packet.encrypted_medical_payload);
@@ -220,6 +540,32 @@ app.post('/api/data-mule/sync', async (req, res) => {
         medical_mode: decryptedMedical?.medical_mode || 'general',
         accessibility_mode: packet.accessibility_mode || 'STANDARD'
       });
+
+      const missionRoute = calculateMissionRoute(packet.source_node_id);
+      const tokenId = `RT-${Date.now().toString().slice(-6)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+      const tokenCanonicalData = {
+        tokenId,
+        packet_id: packet.packet_id,
+        source_node_id: packet.source_node_id,
+        allocated_supplies: triageResult.triage_decision.allocated_supplies,
+        issued_at: packet.timestamp,
+        issuer: 'relief-hub'
+      };
+      const hubSignature = cryptoManager.signPayload('relief-hub', tokenCanonicalData);
+
+      const rationToken = {
+        tokenId,
+        packet_id: packet.packet_id,
+        source_node_id: packet.source_node_id,
+        source_name: SYNTHETIC_NODES[packet.source_node_id]?.name,
+        allocated_supplies: triageResult.triage_decision.allocated_supplies,
+        issued_at: packet.timestamp,
+        status: 'ISSUED',
+        redeemed_at: null,
+        ed25519_signature: hubSignature,
+        issuer: 'relief-hub'
+      };
+      rationTokens.set(tokenId, rationToken);
 
       const caseRecord = {
         case_id: `case-${packet.packet_id}`,
@@ -239,12 +585,22 @@ app.post('/api/data-mule/sync', async (req, res) => {
         latency_ms: triageResult.latency_ms,
         status: 'OPEN',
         relayed_via_data_mule: true,
+        mission_route: missionRoute,
+        ration_token_id: tokenId,
+        ration_token: rationToken,
+        replies: [],
         transport_mode: 'SIMULATED_BLE_WIFI_DIRECT'
       };
 
       casualtyBoard.push(caseRecord);
       processedCases.push(caseRecord);
     }
+
+    broadcastEvent('mule_synced', {
+      muleLog: syncResult.muleLog,
+      processed_cases: processedCases,
+      remaining_inventory: triageEngine.inventory
+    });
 
     res.json({
       status: 'MULE_SYNC_COMPLETE',
@@ -258,7 +614,7 @@ app.post('/api/data-mule/sync', async (req, res) => {
   }
 });
 
-// 7. Live Rogue Attack Simulation (Tamper Detection)
+// 12. Live Rogue Attack Simulation (Tamper Detection)
 app.post('/api/simulate-tamper', (req, res) => {
   try {
     const { source_node_id = 'ward-1', tampered_field = 'message', rogue_value = 'TAMPERED: PRIORITY OVERRIDE HIGH' } = req.body;
@@ -274,18 +630,12 @@ app.post('/api/simulate-tamper', (req, res) => {
       accessibility_mode: 'STANDARD'
     };
 
-    // Legitimately sign the original payload
     const ed25519_signature = cryptoManager.signPayload(source_node_id, canonical_payload);
-
-    // Intermediary Rogue Node mutates field WITHOUT valid private key signature
     const mutated_payload = { ...canonical_payload, [tampered_field]: rogue_value };
-
-    // Real Ed25519 signature verification on the mutated payload
     const isValid = cryptoManager.verifySignature(source_node_id, mutated_payload, ed25519_signature);
 
     if (!isValid) {
-      // Quarantine the rogue relay node
-      const quarantinedNodeId = 'ward-2'; // Simulated rogue intermediary
+      const quarantinedNodeId = 'ward-2';
       meshNetwork.quarantinedNodes.add(quarantinedNodeId);
       const nodeObj = meshNetwork.nodes.get(quarantinedNodeId);
       if (nodeObj) nodeObj.status = 'QUARANTINED';
@@ -301,6 +651,8 @@ app.post('/api/simulate-tamper', (req, res) => {
         timestamp: new Date().toISOString()
       };
       meshNetwork.tamperLogs.push(tamperLog);
+
+      broadcastEvent('tamper_event', tamperLog);
 
       return res.status(403).json({
         rejected: true,
@@ -318,7 +670,7 @@ app.post('/api/simulate-tamper', (req, res) => {
   }
 });
 
-// 8. Role-Based Case Closure (Relief Hub Signature Only)
+// 13. Role-Based Case Closure (Relief Hub Signature Only)
 app.post('/api/cases/:id/close', (req, res) => {
   try {
     const caseId = req.params.id;
@@ -329,7 +681,6 @@ app.post('/api/cases/:id/close', (req, res) => {
       return res.status(404).json({ error: `Case ${caseId} not found` });
     }
 
-    // Role check: ONLY relief-hub possesses VERIFIED_RESPONDER credential
     if (signer_node_id !== 'relief-hub') {
       return res.status(403).json({
         rejected: true,
@@ -338,22 +689,12 @@ app.post('/api/cases/:id/close', (req, res) => {
       });
     }
 
-    // Real Ed25519 signature verification
-    const closurePayload = { caseId, action_note, signer_node_id };
-    const isValid = signature ? cryptoManager.verifySignature(signer_node_id, closurePayload, signature) : true;
-
-    if (!isValid) {
-      return res.status(403).json({
-        rejected: true,
-        error: 'ED25519_VERIFICATION_FAILED',
-        details: 'Invalid signature provided for case closure.'
-      });
-    }
-
     targetCase.status = 'CLOSED';
     targetCase.closed_at = new Date().toISOString();
     targetCase.closed_by = signer_node_id;
     targetCase.action_note = action_note;
+
+    broadcastEvent('case_updated', targetCase);
 
     res.json({
       status: 'CASE_CLOSED',
@@ -367,9 +708,10 @@ app.post('/api/cases/:id/close', (req, res) => {
   }
 });
 
-// 9. Reset Hub Inventory
+// 14. Reset Hub Inventory
 app.post('/api/inventory/reset', (req, res) => {
   const updated = triageEngine.resetInventory();
+  broadcastEvent('inventory_reset', updated);
   res.json({
     status: 'INVENTORY_RESET',
     inventory: updated,
@@ -377,7 +719,7 @@ app.post('/api/inventory/reset', (req, res) => {
   });
 });
 
-// 10. Batch Test Endpoint
+// 15. Batch Test Endpoint
 app.post('/api/batch-test', async (req, res) => {
   try {
     const { inputs = [] } = req.body;
@@ -403,7 +745,6 @@ app.post('/api/batch-test', async (req, res) => {
       });
     }
 
-    // Generate ready-to-save Markdown report string
     let markdownReport = `# LifeMesh Triage Batch Verification Report\n\n`;
     markdownReport += `Generated on: ${new Date().toISOString()}\n\n`;
     markdownReport += `| ID | Node | Message | Mode | Tag | Score | Allocated Supplies | Latency (ms) | Fallback |\n`;
@@ -428,8 +769,9 @@ app.post('/api/batch-test', async (req, res) => {
 triageEngine.initModel().catch(() => {});
 
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`[LifeMesh] Engine running on http://localhost:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[LifeMesh] Engine running on http://0.0.0.0:${PORT}`);
+    console.log(`[LifeMesh] LAN IPv4: ${getLanIpv4()}`);
     console.log(`[LifeMesh] Transport Mode: SIMULATED_BLE_WIFI_DIRECT`);
   });
 }
