@@ -1,15 +1,21 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { SYNTHETIC_NODES, cryptoManager } from './crypto.js';
 import { meshNetwork } from './mesh.js';
 import { triageEngine } from './triage.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // In-Memory Verified Casualty Board (Sorted by Triage Score descending)
 const casualtyBoard = [];

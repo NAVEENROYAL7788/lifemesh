@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LifeMesh | Offline P2P Crisis Relief & Medical Triage OS</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- React & Babel CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brandDark: '#0A192F',
+            panelDark: '#112240',
+            panelBorder: '#1E3A5F',
+            electricCyan: '#06B6D4',
+            emeraldGreen: '#10B981',
+            amberWarn: '#F59E0B',
+            roseAlert: '#F43F5E'
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #07111E;
+      color: #E2E8F0;
+    }
+    .font-mono-code {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    /* Custom terminal scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0A192F;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1E3A5F;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #06B6D4;
+    }
+    .pulse-glow {
+      box-shadow: 0 0 15px rgba(6, 182, 212, 0.4);
+    }
+    .red-glow {
+      box-shadow: 0 0 20px rgba(244, 63, 94, 0.5);
+    }
+  </style>
+</head>
+<body class="bg-[#07111E] text-slate-100 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const API_BASE = window.location.origin;
+
+    function App() {
+      const [state, setState] = useState(null);
+      const [health, setHealth] = useState(null);
+      const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | mesh | sos | batch | logs
+      const [loading, setLoading] = useState(false);
+      const [actionMsg, setActionMsg] = useState(null);
+
+      // SOS Form State
+      const [sourceNode, setSourceNode] = useState('ward-1');
+      const [medicalMode, setMedicalMode] = useState('general');
+      const [sosMsg, setSosMsg] = useState('Flooding near ground floor, 3 elderly members trapped, need emergency drinking water and food rations.');
+      const [conditionNotes, setConditionNotes] = useState('Patient 1 has diabetes, needs regular insulin checks');
+      const [accessibilityMode, setAccessibilityMode] = useState('STANDARD');
+
+      // Triage Batch State
+      const [batchReport, setBatchReport] = useState('');
+      const [batchRunning, setBatchRunning] = useState(false);
+
+      const fetchState = async () => {
+        try {
+          const [sRes, hRes] = await Promise.all([
+            fetch(`${API_BASE}/api/state`).then(r => r.json()),
+            fetch(`${API_BASE}/api/health`).then(r => r.json())
+          ]);
+          setState(sRes);
+          setHealth(hRes);
+        } catch (err) {
+          console.error("Fetch state error:", err);
+        }
+      };
+
+      useEffect(() => {
+        fetchState();
+        const interval = setInterval(fetchState, 4000);
+        return () => clearInterval(interval);
+      }, []);
+
+      const showNotification = (msg, type = 'success') => {
+        setActionMsg({ text: msg, type });
+        setTimeout(() => setActionMsg(null), 4500);
+      };
+
+      // 1. Submit SOS
+      const handleSubmitSOS = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+          const res = await fetch(`${API_BASE}/api/sos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source_node_id: sourceNode,
+              message: sosMsg,
+              medical_mode: medicalMode,
+              condition_notes: conditionNotes,
+              accessibility_mode: accessibilityMode
+            })
+          });
+          const data = await res.json();
+          if (data.status === 'DELIVERED_AND_TRIAGED') {
+            showNotification(`SOS Delivered! Triage Tag: ${data.case_record.triage_tag} (${data.case_record.triage_score}/100) via ${data.routing.hop_trace.length - 1} hops.`);
+          } else if (data.status === 'BUFFERED_OFFLINE') {
+            showNotification(`Network partitioned! Packet buffered safely in ${sourceNode} store-and-forward queue.`, 'warn');
+          } else if (data.rejected) {
+            showNotification(`Packet Rejected! ${data.reason}`, 'alert');
+          }
+          fetchState();
+        } catch (err) {
+          showNotification(`Error sending SOS: ${err.message}`, 'alert');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // 2. Toggle Node Online/Offline
+      const handleToggleNode = async (nodeId, currentStatus) => {
+        try {
+          const newStatus = currentStatus === 'ONLINE' ? 'OFFLINE' : 'ONLINE';
+          const res = await fetch(`${API_BASE}/api/nodes/${nodeId}/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus })
+          });
+          const data = await res.json();
+          showNotification(`Node ${data.name} set to ${data.new_status}`);
+          fetchState();
+        } catch (err) {
+          showNotification(`Toggle failed: ${err.message}`, 'alert');
+        }
+      };
+
+      // 3. Trigger Silent Distress
+      const handleSilentDistress = async (nodeId) => {
+        try {
+          const res = await fetch(`${API_BASE}/api/nodes/${nodeId}/silent-distress`, { method: 'POST' });
+          const data = await res.json();
+          showNotification(`Silent Distress triggered for ${nodeId}! Tag: RED priority.`, 'alert');
+          fetchState();
+        } catch (err) {
+          showNotification(`Error: ${err.message}`, 'alert');
+        }
+      };
+
+      // 4. Data Mule Rescue Boat Sync
+      const handleDataMuleSync = async () => {
+        try {
+          const res = await fetch(`${API_BASE}/api/data-mule/sync`, { method: 'POST' });
+          const data = await res.json();
+          showNotification(`Rescue Boat Data Mule synced! Merged ${data.sync_summary.packets_merged} packets from partitioned nodes.`);
+          fetchState();
+        } catch (err) {
+          showNotification(`Mule sync failed: ${err.message}`, 'alert');
+        }
+      };
+
+      // 5. Simulate Rogue Attack (Tamper Mid-Hop)
+      const handleSimulateTamper = async () => {
+        try {
+          const res = await fetch(`${API_BASE}/api/simulate-tamper`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source_node_id: 'ward-1',
+              tampered_field: 'message',
+              rogue_value: 'TAMPERED: MALICIOUS ROUTING OVERRIDE'
+            })
+          });
+          const data = await res.json();
+          if (data.rejected) {
+            showNotification(`ROGUE ATTACK DETECTED! Signature mismatch. Node ${data.quarantined_node} quarantined!`, 'alert');
+          }
+          fetchState();
+        } catch (err) {
+          showNotification(`Tamper call failed: ${err.message}`, 'alert');
+        }
+      };
+
+      // 6. Close Case (Hub Signature Only)
+      const handleCloseCase = async (caseId) => {
+        try {
+          const res = await fetch(`${API_BASE}/api/cases/${caseId}/close`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              signer_node_id: 'relief-hub',
+              action_note: 'Resolved on-site by field medical team.'
+            })
+          });
+          const data = await res.json();
+          showNotification(`Case ${caseId} marked as RESOLVED by Relief Hub!`);
+          fetchState();
+        } catch (err) {
+          showNotification(`Close case failed: ${err.message}`, 'alert');
+        }
+      };
+
+      // 7. Reset Inventory
+      const handleResetInventory = async () => {
+        try {
+          await fetch(`${API_BASE}/api/inventory/reset`, { method: 'POST' });
+          showNotification(`Hub Inventory restored to default levels.`);
+          fetchState();
+        } catch (err) {
+          showNotification(`Reset failed: ${err.message}`, 'alert');
+        }
+      };
+
+      // 8. Run Batch Verification Test
+      const handleRunBatchTest = async () => {
+        setBatchRunning(true);
+        try {
+          const res = await fetch(`${API_BASE}/api/batch-test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              inputs: [
+                { id: 'SOS-01', source_node_id: 'ward-1', message: 'Nenju vali, elderly man unconscious', medical_mode: 'cardiac' },
+                { id: 'SOS-02', source_node_id: 'ward-2', message: 'Prasavam valikudhu, full term pregnancy in school shelter', medical_mode: 'pregnancy' },
+                { id: 'SOS-03', source_node_id: 'ward-3', message: 'Sugar low mayakkam, insulin theva', medical_mode: 'diabetic' },
+                { id: 'SOS-04', source_node_id: 'ward-6', message: 'Rooftop trapped thanni rising need drinking water and food for 4 members', medical_mode: 'trapped' }
+              ]
+            })
+          });
+          const data = await res.json();
+          setBatchReport(data.markdown_report);
+          showNotification(`Batch test completed for 4 scenarios!`);
+          fetchState();
+        } catch (err) {
+          showNotification(`Batch test failed: ${err.message}`, 'alert');
+        } finally {
+          setBatchRunning(false);
+        }
+      };
+
+      return (
+        <div className="flex h-screen overflow-hidden bg-[#07111E]">
+          {/* LEFT SIDEBAR */}
+          <aside className="w-64 bg-[#0A192F] border-r border-[#1E3A5F] flex flex-col justify-between shrink-0">
+            <div>
+              {/* Branding */}
+              <div className="p-5 border-b border-[#1E3A5F] flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#06B6D4] to-[#10B981] flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-cyan-500/20">
+                  LM
+                </div>
+                <div>
+                  <h1 className="font-bold tracking-tight text-white flex items-center text-sm">
+                    LifeMesh <span className="text-xs ml-1.5 px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">OS</span>
+                  </h1>
+                  <p className="text-[10px] text-slate-400">P2P Crisis Relief & AI Triage</p>
+                </div>
+              </div>
+
+              {/* Navigation */}
+              <nav className="p-4 space-y-1.5">
+                {[
+                  { id: 'dashboard', label: 'Command Center', icon: 'activity' },
+                  { id: 'mesh', label: 'Mesh Topology & Nodes', icon: 'share-2' },
+                  { id: 'sos', label: 'Dispatch SOS Packet', icon: 'radio' },
+                  { id: 'batch', label: 'Batch AI Triage Test', icon: 'file-text' },
+                  { id: 'logs', label: 'Security & Mule Logs', icon: 'shield-alert' }
+                ].map(item => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
+                      activeTab === item.id
+                        ? 'bg-[#112240] text-cyan-400 border border-cyan-500/30 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-[#112240]/50'
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </nav>
+
+              {/* System Compliance Badges */}
+              <div className="mx-4 p-3 bg-[#112240] border border-[#1E3A5F] rounded-lg text-[11px] space-y-1.5 text-slate-300">
+                <div className="flex items-center justify-between text-slate-400 text-[10px]">
+                  <span>COMPLIANCE STATUS</span>
+                  <span className="text-emerald-400 font-semibold">100% FREE</span>
+                </div>
+                <div className="text-emerald-400 flex items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-2"></span>
+                  Zero Cloud APIs
+                </div>
+                <div className="text-cyan-400 flex items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mr-2"></span>
+                  Local Qwen2.5-0.5B (q4)
+                </div>
+                <div className="text-amber-400 flex items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mr-2"></span>
+                  Real Ed25519 & AES-256
+                </div>
+              </div>
+            </div>
+
+            {/* Transport Mode & Footer */}
+            <div className="p-4 border-t border-[#1E3A5F] bg-[#081528] text-[11px] text-slate-400">
+              <div className="flex items-center justify-between mb-1">
+                <span>TRANSPORT:</span>
+                <span className="text-cyan-400 font-mono-code text-[10px]">BLE / WIFI-DIR</span>
+              </div>
+              <div className="text-[10px] text-slate-500">
+                UN SDG 2 (Zero Hunger) & 13 (Climate)
+              </div>
+            </div>
+          </aside>
+
+          {/* MAIN CONTENT AREA */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* TOP HEADER */}
+            <header className="h-16 bg-[#0A192F] border-b border-[#1E3A5F] px-6 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-4">
+                <span className="text-xs uppercase font-mono-code tracking-wider text-slate-400">ENVIRONMENT:</span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-mono-code bg-emerald-950/70 border border-emerald-600/50 text-emerald-300 flex items-center">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>
+                  AIRPLANE_MODE_READY (OFFLINE)
+                </span>
+                <span className="text-xs text-slate-500 font-mono-code">
+                  {state?.transport_mode}
+                </span>
+              </div>
+
+              {/* Quick Actions in Header */}
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={handleDataMuleSync}
+                  className="px-3 py-1.5 text-xs bg-cyan-900/60 hover:bg-cyan-800 text-cyan-200 border border-cyan-600/60 rounded-md font-medium flex items-center transition"
+                >
+                  <span className="mr-1.5">🚤</span> Rescue Boat Sync
+                </button>
+                <button
+                  onClick={handleSimulateTamper}
+                  className="px-3 py-1.5 text-xs bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-700/60 rounded-md font-medium flex items-center transition"
+                >
+                  <span className="mr-1.5">⚠️</span> Simulate Rogue Tamper
+                </button>
+                <button
+                  onClick={handleResetInventory}
+                  className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md font-medium transition"
+                >
+                  Reset Stock
+                </button>
+              </div>
+            </header>
+
+            {/* NOTIFICATION TOAST */}
+            {actionMsg && (
+              <div className={`mx-6 mt-4 p-3 rounded-lg border text-xs flex items-center justify-between transition-all ${
+                actionMsg.type === 'alert'
+                  ? 'bg-rose-950/90 border-rose-600 text-rose-200 red-glow'
+                  : actionMsg.type === 'warn'
+                  ? 'bg-amber-950/90 border-amber-600 text-amber-200'
+                  : 'bg-emerald-950/90 border-emerald-600 text-emerald-200 pulse-glow'
+              }`}>
+                <span>{actionMsg.text}</span>
+                <button onClick={() => setActionMsg(null)} className="ml-3 font-bold text-slate-400 hover:text-white">✕</button>
+              </div>
+            )}
+
+            {/* TAB CONTENTS */}
+            <main className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* TAB 1: COMMAND CENTER DASHBOARD */}
+              {activeTab === 'dashboard' && (
+                <div className="space-y-6">
+                  {/* Top Stats Row: Inventory & Status */}
+                  <div className="grid grid-cols-5 gap-4">
+                    {[
+                      { label: 'Water Packs', key: 'water_packs', icon: '💧', total: 6, unit: 'crates' },
+                      { label: 'Food Rations', key: 'food_rations', icon: '🍞', total: 4, unit: 'kits' },
+                      { label: 'Medical Kits', key: 'medical_kits', icon: '🩹', total: 3, unit: 'bags' },
+                      { label: 'Insulin Packs', key: 'insulin_packs', icon: '💉', total: 2, unit: 'doses' },
+                      { label: 'Rescue Boats', key: 'rescue_boats', icon: '🚤', total: 2, unit: 'vessels' }
+                    ].map(inv => {
+                      const count = state?.inventory?.[inv.key] ?? 0;
+                      const pct = Math.round((count / inv.total) * 100);
+                      return (
+                        <div key={inv.key} className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-4">
+                          <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                            <span>{inv.label}</span>
+                            <span>{inv.icon}</span>
+                          </div>
+                          <div className="flex items-baseline space-x-2">
+                            <span className="text-2xl font-bold text-white font-mono-code">{count}</span>
+                            <span className="text-slate-400 text-xs">/ {inv.total}</span>
+                          </div>
+                          {/* Progress bar */}
+                          <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${count <= 1 ? 'bg-rose-500' : 'bg-cyan-500'}`}
+                              style={{ width: `${pct}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Main Grid: Live Casualty Board & Quick SOS Dispatch */}
+                  <div className="grid grid-cols-12 gap-6">
+                    {/* Left: Verified Casualty Board (8 Cols) */}
+                    <div className="col-span-8 bg-[#112240] border border-[#1E3A5F] rounded-xl p-5">
+                      <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#1E3A5F]">
+                        <div>
+                          <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center">
+                            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 mr-2 animate-pulse"></span>
+                            Verified Casualty Board (Sorted by Triage Score)
+                          </h2>
+                          <p className="text-[11px] text-slate-400">START protocol priority queue decrypted exclusively by Central Relief Hub</p>
+                        </div>
+                        <span className="px-2 py-0.5 rounded text-[11px] font-mono-code bg-slate-800 text-slate-300">
+                          {state?.casualty_board?.length || 0} Cases Active
+                        </span>
+                      </div>
+
+                      {/* Cases List */}
+                      <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+                        {(!state?.casualty_board || state.casualty_board.length === 0) ? (
+                          <div className="p-8 text-center text-slate-500 text-xs">
+                            No active casualties reported. Send an SOS or execute a batch test to populate.
+                          </div>
+                        ) : (
+                          state.casualty_board.map(c => {
+                            const isRed = c.triage_tag === 'RED';
+                            const isYellow = c.triage_tag === 'YELLOW';
+                            return (
+                              <div
+                                key={c.case_id}
+                                className={`p-4 rounded-lg border transition-all ${
+                                  c.status === 'CLOSED'
+                                    ? 'bg-[#0A192F]/60 border-slate-800 opacity-60'
+                                    : isRed
+                                    ? 'bg-rose-950/20 border-rose-800/80 red-glow'
+                                    : isYellow
+                                    ? 'bg-amber-950/20 border-amber-800/60'
+                                    : 'bg-emerald-950/20 border-emerald-800/60'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between">
+                                  <div className="flex items-center space-x-2">
+                                    <span className={`px-2 py-0.5 rounded text-[11px] font-bold font-mono-code ${
+                                      isRed ? 'bg-rose-600 text-white' : isYellow ? 'bg-amber-500 text-black' : 'bg-emerald-600 text-white'
+                                    }`}>
+                                      {c.triage_tag} ({c.triage_score})
+                                    </span>
+                                    <span className="text-xs font-semibold text-white">{c.source_name}</span>
+                                    <span className="text-[10px] font-mono-code text-slate-400">
+                                      ({c.hops_traversed ?? 0} hops)
+                                    </span>
+                                    {c.relayed_via_data_mule && (
+                                      <span className="px-1.5 py-0.5 text-[9px] bg-cyan-950 text-cyan-300 border border-cyan-800 rounded">
+                                        RESCUE BOAT MULE
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center space-x-2">
+                                    <span className="text-[10px] text-slate-400 font-mono-code">
+                                      Latency: {c.latency_ms}ms
+                                    </span>
+                                    {c.status !== 'CLOSED' && (
+                                      <button
+                                        onClick={() => handleCloseCase(c.case_id)}
+                                        className="px-2 py-0.5 text-[10px] bg-slate-800 hover:bg-emerald-900 text-slate-300 hover:text-emerald-200 border border-slate-700 rounded transition"
+                                        title="Close case with Relief Hub Ed25519 signature"
+                                      >
+                                        Resolve
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <p className="text-xs text-slate-200 mt-2">
+                                  "{c.message}"
+                                </p>
+
+                                {/* Decrypted Medical Notes (Zero-knowledge hub exclusive) */}
+                                {c.decrypted_condition_notes && (
+                                  <div className="mt-2 p-2 bg-[#0A192F] rounded border border-cyan-900/60 text-[11px] text-cyan-200">
+                                    <span className="font-semibold text-cyan-400">🔒 Hub Decrypted Medical Record:</span> {c.decrypted_condition_notes}
+                                  </div>
+                                )}
+
+                                {/* Rationale & Supplies */}
+                                <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800/80">
+                                  <div className="truncate max-w-md">
+                                    <span className="text-slate-300 font-medium">Rationale:</span> {c.clinical_rationale}
+                                  </div>
+                                  <div className="font-mono-code text-cyan-300">
+                                    Allocated: {Object.entries(c.allocated_supplies || {}).map(([k, v]) => `${k}:${v}`).join(', ') || 'None'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Right: Real-Time Node Status & Quick SOS (4 Cols) */}
+                    <div className="col-span-4 space-y-6">
+                      {/* Active Nodes List */}
+                      <div className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-3 pb-2 border-b border-[#1E3A5F]">
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-white">7 P2P Mesh Nodes</h3>
+                          <span className="text-[10px] text-cyan-400 font-mono-code">Click to toggle</span>
+                        </div>
+                        <div className="space-y-2">
+                          {state?.nodes?.map(n => {
+                            const isOnline = n.status === 'ONLINE';
+                            const isQuarantine = n.status === 'QUARANTINED';
+                            return (
+                              <div
+                                key={n.id}
+                                className={`p-2.5 rounded-lg border text-xs flex items-center justify-between transition ${
+                                  isQuarantine
+                                    ? 'bg-rose-950/40 border-rose-600 text-rose-300'
+                                    : isOnline
+                                    ? 'bg-[#0A192F] border-slate-800 text-slate-200'
+                                    : 'bg-slate-900/40 border-slate-800 text-slate-500'
+                                }`}
+                              >
+                                <div>
+                                  <div className="font-semibold text-[11px]">{n.name}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono-code">
+                                    {n.role} {n.store_and_forward_queue?.length > 0 && `(Queued: ${n.store_and_forward_queue.length})`}
+                                  </div>
+                                </div>
+                                <div className="flex items-center space-x-1.5">
+                                  {n.id !== 'relief-hub' && (
+                                    <button
+                                      onClick={() => handleSilentDistress(n.id)}
+                                      className="p-1 rounded hover:bg-rose-900/60 text-rose-400"
+                                      title="Trigger Silent Distress Pulse"
+                                    >
+                                      🚨
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => handleToggleNode(n.id, n.status)}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-mono-code ${
+                                      isOnline
+                                        ? 'bg-emerald-950 border border-emerald-600 text-emerald-300'
+                                        : 'bg-rose-950 border border-rose-700 text-rose-300'
+                                    }`}
+                                  >
+                                    {n.status}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Quick SOS Trigger Form */}
+                      <div className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-4">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-white mb-3 pb-2 border-b border-[#1E3A5F]">
+                          Quick SOS Injector
+                        </h3>
+                        <form onSubmit={handleSubmitSOS} className="space-y-3 text-xs">
+                          <div>
+                            <label className="text-slate-400 text-[10px] block mb-1">Source Node:</label>
+                            <select
+                              value={sourceNode}
+                              onChange={e => setSourceNode(e.target.value)}
+                              className="w-full bg-[#0A192F] border border-slate-700 rounded px-2.5 py-1.5 text-slate-200"
+                            >
+                              {state?.nodes?.filter(n => n.id !== 'relief-hub').map(n => (
+                                <option key={n.id} value={n.id}>{n.name}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-slate-400 text-[10px] block mb-1">Medical Mode:</label>
+                            <select
+                              value={medicalMode}
+                              onChange={e => setMedicalMode(e.target.value)}
+                              className="w-full bg-[#0A192F] border border-slate-700 rounded px-2.5 py-1.5 text-slate-200"
+                            >
+                              <option value="general">General / Trapped</option>
+                              <option value="cardiac">Cardiac Emergency (Chest Pain / Nenju Vali)</option>
+                              <option value="pregnancy">Pregnancy / Labour (Prasavam)</option>
+                              <option value="diabetic">Diabetic / Low Sugar (Insulin needed)</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-slate-400 text-[10px] block mb-1">Message (Tamil / Tanglish / English):</label>
+                            <textarea
+                              rows="2"
+                              value={sosMsg}
+                              onChange={e => setSosMsg(e.target.value)}
+                              className="w-full bg-[#0A192F] border border-slate-700 rounded p-2 text-slate-200 text-xs"
+                            ></textarea>
+                          </div>
+
+                          <div>
+                            <label className="text-slate-400 text-[10px] block mb-1">Sensitive Condition Notes (AES-256 Encrypted):</label>
+                            <input
+                              type="text"
+                              value={conditionNotes}
+                              onChange={e => setConditionNotes(e.target.value)}
+                              className="w-full bg-[#0A192F] border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 text-xs"
+                            />
+                          </div>
+
+                          <button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full py-2 bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-semibold rounded-lg shadow-md transition disabled:opacity-50"
+                          >
+                            {loading ? 'Routing & Triaging...' : '🚀 Sign & Broadcast SOS'}
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: MESH TOPOLOGY & MULTI-HOP INSPECTION */}
+              {activeTab === 'mesh' && (
+                <div className="space-y-6">
+                  <div className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-6">
+                    <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-2">
+                      P2P Mesh Topology & Peer Graph
+                    </h2>
+                    <p className="text-xs text-slate-400 mb-6">
+                      Simulated BLE 5.2 and Wi-Fi Direct multi-hop routing graph connecting 6 flood-zone shelters to Central Disaster Relief Hub.
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      {state?.edges?.map((edge, idx) => {
+                        const fromNode = state?.nodes?.find(n => n.id === edge.from);
+                        const toNode = state?.nodes?.find(n => n.id === edge.to);
+                        const isLinkActive = fromNode?.status === 'ONLINE' && toNode?.status === 'ONLINE';
+                        return (
+                          <div
+                            key={idx}
+                            className={`p-3 rounded-lg border flex items-center justify-between text-xs ${
+                              isLinkActive
+                                ? 'bg-[#0A192F] border-slate-800 text-slate-200'
+                                : 'bg-rose-950/20 border-rose-900/50 text-slate-500'
+                            }`}
+                          >
+                            <div>
+                              <div className="font-semibold text-white">
+                                {fromNode?.name || edge.from} ↔ {toNode?.name || edge.to}
+                              </div>
+                              <div className="text-[10px] text-cyan-400 font-mono-code mt-0.5">
+                                Medium: {edge.medium} | Signal: {edge.rssi_dbm} dBm
+                              </div>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono-code ${
+                              isLinkActive ? 'bg-emerald-950 text-emerald-300' : 'bg-rose-950 text-rose-300'
+                            }`}>
+                              {isLinkActive ? 'ACTIVE' : 'BROKEN'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: BATCH AI TRIAGE TEST */}
+              {activeTab === 'batch' && (
+                <div className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                        Automated AI Batch Triage Verification
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Executes multi-lingual crisis scenarios (Tamil / Tanglish / English) across Qwen2.5-0.5B-Instruct + START protocol override.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleRunBatchTest}
+                      disabled={batchRunning}
+                      className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50"
+                    >
+                      {batchRunning ? 'Evaluating Models...' : 'Execute Batch Test'}
+                    </button>
+                  </div>
+
+                  {batchReport ? (
+                    <div className="p-4 bg-[#0A192F] border border-slate-800 rounded-lg font-mono-code text-xs text-slate-300 overflow-x-auto whitespace-pre-wrap">
+                      {batchReport}
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center text-slate-500 text-xs border border-dashed border-slate-800 rounded-lg">
+                      Click "Execute Batch Test" to run the 4 multi-scenario crisis evaluations.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 4: SECURITY & DATA MULE LOGS */}
+              {activeTab === 'logs' && (
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Tamper Logs */}
+                  <div className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-rose-400 mb-3 pb-2 border-b border-[#1E3A5F]">
+                      🚨 Cryptographic Rogue Tamper Logs
+                    </h3>
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {(!state?.tamper_logs || state.tamper_logs.length === 0) ? (
+                        <div className="text-xs text-slate-500 p-4 text-center">No tamper events detected.</div>
+                      ) : (
+                        state.tamper_logs.map((log, i) => (
+                          <div key={i} className="p-3 bg-[#0A192F] border border-rose-900/60 rounded-lg text-xs space-y-1">
+                            <div className="text-rose-400 font-mono-code font-bold">REASON: {log.reason}</div>
+                            <div className="text-slate-300 text-[11px]">Quarantined Node: <span className="font-mono-code text-white">{log.quarantined_node || log.tampered_at_hop}</span></div>
+                            <div className="text-slate-500 text-[10px] font-mono-code">{log.timestamp}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Data Mule Logs */}
+                  <div className="bg-[#112240] border border-[#1E3A5F] rounded-xl p-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-3 pb-2 border-b border-[#1E3A5F]">
+                      🚤 Rescue Boat Data Mule Sync Logs
+                    </h3>
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {(!state?.data_mule_logs || state.data_mule_logs.length === 0) ? (
+                        <div className="text-xs text-slate-500 p-4 text-center">No mule voyages logged yet.</div>
+                      ) : (
+                        state.data_mule_logs.map((log, i) => (
+                          <div key={i} className="p-3 bg-[#0A192F] border border-cyan-900/60 rounded-lg text-xs space-y-1">
+                            <div className="text-cyan-300 font-mono-code font-bold">SYNC ID: {log.sync_id}</div>
+                            <div className="text-slate-300 text-[11px]">
+                              Visited: {log.nodes_visited.join(', ') || 'None'} | Collected: {log.packets_collected} | Merged: {log.packets_merged}
+                            </div>
+                            <div className="text-slate-500 text-[10px] font-mono-code">{log.timestamp}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </main>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
